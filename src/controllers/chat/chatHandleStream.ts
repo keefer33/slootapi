@@ -6,7 +6,18 @@ import { handleToolCall } from './chatUtils';
 import { createThreadMessage } from '../../utils/threadsUtils';
 
 // Function to handle the first stream and collect tool results
-export const handleStream = async (chatAgent: ChatAgent): Promise<any> => {
+export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number = 0): Promise<any> => {
+  // Prevent infinite recursion (max 10 tool call iterations)
+  if (recursionDepth > 10) {
+    console.error('Maximum recursion depth reached for tool calls. Stopping to prevent infinite loop.');
+    sendSSEEvent(chatAgent.res, {
+      type: 'error',
+      text: 'Maximum tool call recursion depth reached',
+      thread_id: chatAgent.threadId || '',
+    });
+    return;
+  }
+
   // Check if we should use responses endpoint (for xAI with search tools)
   const useResponsesEndpoint =
     (chatAgent.payload as any).useResponsesEndpoint ||
@@ -87,32 +98,58 @@ export const handleStream = async (chatAgent: ChatAgent): Promise<any> => {
   }
 
   let updateStatus = 'Message in progress';
+  let lastSentStatus = '';
 
   for await (const chunk of stream) {
-    sendSSEEvent(chatAgent.res, {
-      type: 'updates',
-      text: { type: 'in_progress', status: updateStatus },
-      thread_id: chatAgent.threadId || '',
-    });
-
     if (useResponsesEndpoint) {
       // Handle responses API streaming format
       switch (chunk.type) {
         case 'response.created':
           chatAgent.payload.previous_response_id = chunk.response?.id;
           updateStatus = 'Response created';
+          // Only send status update if it changed
+          if (updateStatus !== lastSentStatus) {
+            sendSSEEvent(chatAgent.res, {
+              type: 'updates',
+              text: { type: 'in_progress', status: updateStatus },
+              thread_id: chatAgent.threadId || '',
+            });
+            lastSentStatus = updateStatus;
+          }
           break;
         case 'response.output_item.added':
-          if (chunk.item?.type === 'function_call') {
+          if (chunk.item?.type === 'function_call' && chunk.item?.name) {
+            // Handle arguments - responses endpoint may send as object or string
+            let argumentsValue: string;
+            if (typeof chunk.item.arguments === 'string') {
+              // Already a string, use as-is
+              argumentsValue = chunk.item.arguments;
+            } else if (chunk.item.arguments && typeof chunk.item.arguments === 'object') {
+              // Object, stringify it
+              argumentsValue = JSON.stringify(chunk.item.arguments);
+            } else {
+              // No arguments, use empty object
+              argumentsValue = '{}';
+            }
+
             finalToolCalls[chunk.output_index || 0] = {
               id: chunk.item.call_id || '',
               type: 'function',
               function: {
-                name: chunk.item.name || '',
-                arguments: JSON.stringify(chunk.item.arguments || {}),
+                name: chunk.item.name,
+                arguments: argumentsValue,
               },
             };
             updateStatus = 'Tool call added: ' + chunk.item.name;
+            // Only send status update if it changed
+            if (updateStatus !== lastSentStatus) {
+              sendSSEEvent(chatAgent.res, {
+                type: 'updates',
+                text: { type: 'in_progress', status: updateStatus },
+                thread_id: chatAgent.threadId || '',
+              });
+              lastSentStatus = updateStatus;
+            }
           }
           break;
         case 'response.output_text.delta':
@@ -124,7 +161,16 @@ export const handleStream = async (chatAgent: ChatAgent): Promise<any> => {
               text: chunk.delta,
               thread_id: chatAgent.threadId || '',
             });
-            updateStatus = 'Message in progress';
+            // Only update status on first delta
+            if (updateStatus !== 'Message in progress') {
+              updateStatus = 'Message in progress';
+              sendSSEEvent(chatAgent.res, {
+                type: 'updates',
+                text: { type: 'in_progress', status: updateStatus },
+                thread_id: chatAgent.threadId || '',
+              });
+              lastSentStatus = updateStatus;
+            }
           }
           break;
         case 'response.output_text.done':
@@ -134,6 +180,15 @@ export const handleStream = async (chatAgent: ChatAgent): Promise<any> => {
             message = chunk.text;
           }
           updateStatus = 'Text output complete';
+          // Only send status update if it changed
+          if (updateStatus !== lastSentStatus) {
+            sendSSEEvent(chatAgent.res, {
+              type: 'updates',
+              text: { type: 'in_progress', status: updateStatus },
+              thread_id: chatAgent.threadId || '',
+            });
+            lastSentStatus = updateStatus;
+          }
           break;
         case 'response.completed':
           // Response is complete - add the message
@@ -196,7 +251,6 @@ export const handleStream = async (chatAgent: ChatAgent): Promise<any> => {
           break;
       }
     } else {
-      console.log('xAI Streaming - Using chat completions format, chunk:', JSON.stringify(chunk, null, 2));
       // Handle chat completions streaming format
       if (chunk?.choices[0]?.delta?.content) {
         message += chunk?.choices[0]?.delta?.content;
@@ -205,27 +259,35 @@ export const handleStream = async (chatAgent: ChatAgent): Promise<any> => {
           text: chunk?.choices[0]?.delta?.content,
           thread_id: chatAgent.threadId || '',
         });
-        updateStatus = 'Message in progress';
-        sendSSEEvent(chatAgent.res, {
-          type: 'updates',
-          text: {
-            type: 'in_progress',
-            status: updateStatus,
-          },
-          thread_id: chatAgent.threadId || '',
-        });
+        // Only update status on first content delta
+        if (updateStatus !== 'Message in progress') {
+          updateStatus = 'Message in progress';
+          sendSSEEvent(chatAgent.res, {
+            type: 'updates',
+            text: {
+              type: 'in_progress',
+              status: updateStatus,
+            },
+            thread_id: chatAgent.threadId || '',
+          });
+          lastSentStatus = updateStatus;
+        }
       }
 
       if (chunk?.choices[0]?.delta?.tool_calls) {
         updateStatus = 'Tool calls in progress';
-        sendSSEEvent(chatAgent.res, {
-          type: 'updates',
-          text: {
-            type: 'in_progress',
-            status: updateStatus,
-          },
-          thread_id: chatAgent.threadId || '',
-        });
+        // Only send status update if it changed
+        if (updateStatus !== lastSentStatus) {
+          sendSSEEvent(chatAgent.res, {
+            type: 'updates',
+            text: {
+              type: 'in_progress',
+              status: updateStatus,
+            },
+            thread_id: chatAgent.threadId || '',
+          });
+          lastSentStatus = updateStatus;
+        }
         // Handle tool calls with proper argument accumulation
         chunk.choices[0].delta.tool_calls.forEach(
         (deltaToolCall: any, chunkIndex: number) => {
@@ -281,10 +343,10 @@ export const handleStream = async (chatAgent: ChatAgent): Promise<any> => {
     }
 
       if (chunk?.choices[0]?.finish_reason === 'stop') {
-        // Format to match user message format (content as array)
+        // Format to match OpenAI format (content as string for assistant messages)
         chatAgent.currentMessage.push({
           role: 'assistant',
-          content: [{ type: 'text', text: message }],
+          content: message, // Use string format to match OpenAI/chat completions format
         });
       }
 
@@ -330,16 +392,91 @@ export const handleStream = async (chatAgent: ChatAgent): Promise<any> => {
     });
     const updatedChatAgent = await handleToolCall(finalToolCalls, chatAgent);
 
-    const secondPayload = {
+    // For responses endpoint, we need to use 'input' not 'messages'
+    // Remove 'input' if it exists, and convert messages to input format
+    const secondPayload: any = {
       ...updatedChatAgent.payload,
-      messages: [...updatedChatAgent.currentMessage],
     };
+
+    // Remove old input and messages to avoid conflicts
+    delete secondPayload.input;
+    delete secondPayload.messages;
+
+    // Convert currentMessage to input format for responses endpoint
+    if (useResponsesEndpoint) {
+      // For responses endpoint with previous_response_id, we should only include
+      // the tool results, not the assistant messages with tool_calls
+      // The API will use previous_response_id to get the context
+      const inputMessages = updatedChatAgent.currentMessage
+        .filter((msg: any) => {
+          // Exclude assistant messages with tool_calls - they're handled via previous_response_id
+          if (msg.role === 'assistant' && msg.tool_calls && Array.isArray(msg.tool_calls)) {
+            return false;
+          }
+          return true;
+        })
+        .map((msg: any) => {
+          // Handle tool results - responses endpoint expects specific format
+          // Note: 'name' field is only allowed for 'user' messages, not 'tool' messages
+          if (msg.role === 'tool') {
+            return {
+              role: 'tool',
+              content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+              tool_call_id: msg.tool_call_id || msg.call_id,
+              // Do not include 'name' field - it's only allowed for user messages
+            };
+          }
+
+        if (msg.content && Array.isArray(msg.content)) {
+          return {
+            role: msg.role,
+            content: msg.content.map((contentItem: any) => {
+              if (msg.role === 'user') {
+                if (contentItem.type === 'text') {
+                  return {
+                    type: 'input_text',
+                    text: contentItem.text || '',
+                  };
+                }
+              } else if (msg.role === 'assistant') {
+                if (contentItem.type === 'text') {
+                  return {
+                    type: 'output_text',
+                    text: contentItem.text || '',
+                  };
+                }
+              }
+              return contentItem;
+            }),
+          };
+        }
+        if (typeof msg.content === 'string') {
+          return {
+            role: msg.role,
+            content: [
+              {
+                type: msg.role === 'user' ? 'input_text' : 'output_text',
+                text: msg.content,
+              },
+            ],
+          };
+        }
+        // For other message types, keep as-is
+        return msg;
+      });
+      secondPayload.input = inputMessages;
+    } else {
+      // For chat completions endpoint, use messages
+      secondPayload.messages = [...updatedChatAgent.currentMessage];
+    }
+
     updatedChatAgent.payload = secondPayload;
     //handleClientDisconnect(req, chat);
     // For the second call, we should use the non-streaming approach since we already have tool results
     //only for mete
     //need o fix the threadId not going back to the browse for the others
-    await handleStream(updatedChatAgent);
+    // Increment recursion depth to prevent infinite loops
+    await handleStream(updatedChatAgent, recursionDepth + 1);
     chatAgent.res.end();
     //sendSSEEvent(res, { type: 'done', thread_id: threadId });
   } else {

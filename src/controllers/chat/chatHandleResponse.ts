@@ -229,8 +229,21 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
       updatedChatAgent.payload = secondPayload;
       await handleResponse(updatedChatAgent);
     } else {
+      // Ensure content is a string, not an array (for frontend compatibility)
+      const assistantMessage = response.choices?.[0]?.message;
+      let content = assistantMessage?.content;
+
+      // Convert array content to string if needed
+      if (Array.isArray(content)) {
+        content = content
+          .map((item: any) => (typeof item === 'string' ? item : item?.text || ''))
+          .join('');
+      }
+
       chatAgent.currentMessage.push({
-        ...response.choices?.[0]?.message,
+        role: 'assistant',
+        content: content || '', // Use string format to match OpenAI/chat completions format
+        ...(assistantMessage?.tool_calls && { tool_calls: assistantMessage.tool_calls }),
       });
       chatAgent.threadId = await createThreadMessage(
         chatAgent.req,

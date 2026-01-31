@@ -47,12 +47,44 @@ export const handleToolCall = async (
 };
 
 export const getToolInfo = (toolCall: ToolCall, payload: any): ToolInfo => {
-  const tool = payload.tools.find(
-    (fd: any) => fd.function.name === toolCall.function?.name
-  );
-  const toolId =
-    tool?.function?.parameters?.properties?.tool_id?.enum?.[0] || '';
-  const schema = tool?.function?.parameters;
+  // Handle both formats:
+  // 1. Chat completions format: { type: 'function', function: { name: '...', ... } }
+  // 2. Responses endpoint format: { type: 'function', name: '...', parameters: {...} }
+  const toolCallName = toolCall.function?.name;
+  if (!toolCallName || !payload?.tools || !Array.isArray(payload.tools)) {
+    return { toolId: '', schema: undefined };
+  }
+
+  const tool = payload.tools.find((fd: any) => {
+    if (!fd) return false;
+    // Check responses endpoint format (name at top level)
+    if (fd.name === toolCallName) {
+      return true;
+    }
+    // Check chat completions format (name nested under function)
+    if (fd.function?.name === toolCallName) {
+      return true;
+    }
+    return false;
+  });
+
+  // Extract toolId and schema based on format
+  let toolId = '';
+  let schema: any;
+
+  if (tool) {
+    // Responses endpoint format
+    if (tool.name && tool.parameters) {
+      toolId = tool.parameters?.properties?.tool_id?.enum?.[0] || '';
+      schema = tool.parameters;
+    }
+    // Chat completions format
+    else if (tool.function) {
+      toolId = tool.function?.parameters?.properties?.tool_id?.enum?.[0] || '';
+      schema = tool.function?.parameters;
+    }
+  }
+
   return { toolId, schema };
 };
 
