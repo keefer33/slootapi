@@ -120,9 +120,36 @@ export const validateAndCompleteArgs = (
   toolSchema: any
 ): { errors: string[]; completedArgs: any } => {
   const errors: string[] = [];
-  const completedArgs = functionCall.args
-    ? { ...functionCall.args }
-    : functionCall?.input || JSON.parse(functionCall?.arguments);
+  let completedArgs: any;
+
+  if (functionCall.args) {
+    completedArgs = { ...functionCall.args };
+  } else if (functionCall?.input) {
+    completedArgs = functionCall.input;
+  } else if (functionCall?.arguments) {
+    try {
+      // Handle both string and object arguments
+      if (typeof functionCall.arguments === 'string') {
+        completedArgs = JSON.parse(functionCall.arguments);
+      } else if (typeof functionCall.arguments === 'object') {
+        completedArgs = functionCall.arguments;
+      } else {
+        completedArgs = {};
+      }
+    } catch (error) {
+      console.error('Failed to parse function call arguments:', functionCall.arguments, error);
+      completedArgs = {};
+      errors.push('Failed to parse function call arguments');
+    }
+  } else {
+    completedArgs = {};
+  }
+
+  // Ensure completedArgs is an object, not a string or other type
+  if (typeof completedArgs !== 'object' || Array.isArray(completedArgs)) {
+    console.error('Invalid completedArgs type:', typeof completedArgs, completedArgs);
+    completedArgs = {};
+  }
 
   // Check required parameters and add defaults for missing ones
   if (toolSchema.required && Array.isArray(toolSchema.required)) {
