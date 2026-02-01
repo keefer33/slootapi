@@ -24,11 +24,6 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
     (chatAgent.req.user.userModel?.model_id?.brand_id?.slug === 'xai' &&
       chatAgent.req.user.userModel?.settings?.builtInTools?.search_parameters);
 
-  console.log('xAI Streaming - useResponsesEndpoint:', useResponsesEndpoint);
-  console.log('xAI Streaming - payload.useResponsesEndpoint:', (chatAgent.payload as any).useResponsesEndpoint);
-  console.log('xAI Streaming - brand slug:', chatAgent.req.user.userModel?.model_id?.brand_id?.slug);
-  console.log('xAI Streaming - search_parameters:', chatAgent.req.user.userModel?.settings?.builtInTools?.search_parameters);
-
   // Convert messages to input format for responses endpoint if needed
   if (useResponsesEndpoint && chatAgent.payload.messages && !chatAgent.payload.input) {
     // Filter out assistant messages with tool_calls - responses endpoint doesn't accept them
@@ -86,7 +81,6 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
   // Ensure tools are in the correct format for responses endpoint
   // This is needed because tools might be added after agentXaiPayload is called (e.g., from MCP servers)
   if (useResponsesEndpoint && chatAgent.payload.tools && Array.isArray(chatAgent.payload.tools)) {
-    console.log(`xAI Streaming - Converting ${chatAgent.payload.tools.length} tools to responses endpoint format. Tools before conversion:`, chatAgent.payload.tools.map((t: any) => ({ type: t.type, name: t.name || t.function?.name, hasFunction: !!t.function })));
     chatAgent.payload.tools = chatAgent.payload.tools.map((tool: any) => {
       // If tool is in chat completions format, convert to responses endpoint format
       if (tool.type === 'function' && tool.function && !tool.name) {
@@ -112,7 +106,6 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
       }
       return tool;
     });
-    console.log(`xAI Streaming - Tools after conversion:`, chatAgent.payload.tools.map((t: any) => ({ type: t.type, name: t.name, hasParameters: !!t.parameters })));
   }
 
   const updatedPayload = {
@@ -124,17 +117,17 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
   };
   chatAgent.payload = updatedPayload;
   let message = '';
+  // Use a Map to store tool calls by their output_index to avoid sparse arrays (for responses endpoint)
+  const finalToolCallsMap = new Map<number, ToolCall>();
+  // Use an array for chat completions format
   const finalToolCalls: ToolCall[] = [];
 
   let stream: any;
   if (useResponsesEndpoint) {
     // Use responses endpoint for xAI search tools
-    console.log('xAI Streaming - Using responses endpoint');
-    console.log('xAI Streaming - Payload:', JSON.stringify(chatAgent.payload, null, 2));
     stream = await chatAgent.api!.responses.create(chatAgent.payload);
   } else {
     // Use chat completions endpoint (default)
-    console.log('xAI Streaming - Using chat completions endpoint');
     stream = await chatAgent.api!.chat.completions.stream(chatAgent.payload);
   }
 
@@ -142,11 +135,6 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
   let lastSentStatus = '';
 
   for await (const chunk of stream) {
-    // Log all chunks for debugging
-    if (useResponsesEndpoint) {
-      console.log('xAI Streaming - Received chunk type:', chunk.type, 'chunk:', JSON.stringify(chunk, null, 2));
-    }
-
     if (useResponsesEndpoint) {
       // Handle responses API streaming format
       switch (chunk.type) {
@@ -178,14 +166,15 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
               argumentsValue = '{}';
             }
 
-            finalToolCalls[chunk.output_index || 0] = {
+            // Use Map to avoid sparse arrays - store by output_index
+            finalToolCallsMap.set(chunk.output_index ?? 0, {
               id: chunk.item.call_id || '',
               type: 'function',
               function: {
                 name: chunk.item.name,
                 arguments: argumentsValue,
               },
-            };
+            });
             updateStatus = 'Tool call added: ' + chunk.item.name;
             // Only send status update if it changed
             if (updateStatus !== lastSentStatus) {
@@ -238,8 +227,7 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
           break;
         case 'response.completed':
           // Response is complete - add the message
-          console.log('xAI Streaming - response.completed received, message:', message, 'finalToolCalls.length:', finalToolCalls.length);
-          console.log('xAI Streaming - chunk.response?.output:', JSON.stringify(chunk.response?.output, null, 2));
+          const toolCallsCount = finalToolCallsMap.size;
 
           // Extract text from response.output if message is still empty
           if (!message && chunk.response?.output) {
@@ -252,7 +240,6 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
               message = textOutputs
                 .map((output: any) => output.text || '')
                 .join('');
-              console.log('xAI Streaming - Extracted message from response.output:', message);
             } else {
               // Fallback: look for any output with text property
               const anyTextOutput = chunk.response.output.find(
@@ -260,7 +247,6 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
               );
               if (anyTextOutput) {
                 message = anyTextOutput.text || anyTextOutput.content?.text || '';
-                console.log('xAI Streaming - Extracted message from fallback:', message);
               }
             }
           }
@@ -275,20 +261,16 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
 
           // Add the accumulated message when response is completed
           // Format to match OpenAI format (content as string for assistant messages)
-          if (message && !finalToolCalls.length) {
-            console.log('xAI Streaming - Adding assistant message:', message);
+          if (message && toolCallsCount === 0) {
             chatAgent.currentMessage.push({
               role: 'assistant',
               content: message, // Use string format to match OpenAI/chat completions format
             });
-            console.log('xAI Streaming - currentMessage after push:', JSON.stringify(chatAgent.currentMessage, null, 2));
-          } else {
-            console.log('xAI Streaming - NOT adding assistant message. message:', message, 'finalToolCalls.length:', finalToolCalls.length);
           }
           break;
         case 'response.done':
           // Legacy event - handle if response.completed isn't received
-          console.log('xAI Streaming - response.done received, message:', message, 'finalToolCalls.length:', finalToolCalls.length);
+          const toolCallsCountDone = finalToolCallsMap.size;
           if (chunk.response?.usage) {
             const usage = getModelPricing(
               chunk.response.usage,
@@ -297,8 +279,7 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
             chatAgent.usage.push(usage);
           }
           // Add the accumulated message when response is done
-          if (message && !finalToolCalls.length) {
-            console.log('xAI Streaming - Adding assistant message (from response.done):', message);
+          if (message && toolCallsCountDone === 0) {
             chatAgent.currentMessage.push({
               role: 'assistant',
               content: message, // Use string format to match OpenAI/chat completions format
@@ -315,8 +296,6 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
           });
           break;
         default:
-          // Log unhandled chunk types for debugging
-          console.log('xAI Streaming - Unhandled chunk type:', chunk.type, 'chunk:', JSON.stringify(chunk, null, 2));
           break;
       }
     } else {
@@ -432,24 +411,42 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
     });
   }
 
-  if (finalToolCalls.length > 0) {
-    let combinedToolCalls = '';
-    const toolCallsUpdates = finalToolCalls.map(toolCall => {
-      combinedToolCalls += ` ${toolCall.function?.name} `;
-      return {
-        type: 'function',
-        id: toolCall.id || toolCall.function?.name || '',
-        function: {
-          ...toolCall.function,
-          arguments: toolCall.function?.arguments || '',
-        },
-      };
-    });
+  // Combine tool calls from Map (responses endpoint) and array (chat completions)
+  // Convert Map to array, sorted by key (output_index)
+  const toolCallsFromMap = Array.from(finalToolCallsMap.entries())
+    .sort(([aKey], [bKey]) => aKey - bKey)
+    .map(([_, toolCall]) => toolCall);
 
-    chatAgent.currentMessage.push({
-      role: 'assistant',
-      tool_calls: toolCallsUpdates,
-    });
+  // Combine both sources
+  const allToolCalls = [...toolCallsFromMap, ...finalToolCalls];
+
+  if (allToolCalls.length > 0) {
+    let combinedToolCalls = '';
+    // Filter out null/undefined values and map to tool_calls format
+    const toolCallsUpdates = allToolCalls
+      .filter((toolCall): toolCall is NonNullable<typeof toolCall> => {
+        // Filter out null, undefined, and tool calls without a function
+        return toolCall != null && toolCall.function != null;
+      })
+      .map(toolCall => {
+        combinedToolCalls += ` ${toolCall.function?.name} `;
+        return {
+          type: 'function',
+          id: toolCall.id || toolCall.function?.name || '',
+          function: {
+            ...toolCall.function,
+            arguments: toolCall.function?.arguments || '',
+          },
+        };
+      });
+
+    // Only add tool_calls if we have valid tool calls
+    if (toolCallsUpdates.length > 0) {
+      chatAgent.currentMessage.push({
+        role: 'assistant',
+        tool_calls: toolCallsUpdates,
+      });
+    }
     updateStatus = 'Executing tool calls: ' + combinedToolCalls;
     sendSSEEvent(chatAgent.res, {
       type: 'updates',
@@ -459,7 +456,7 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
       },
       thread_id: chatAgent.threadId || '',
     });
-    const updatedChatAgent = await handleToolCall(finalToolCalls, chatAgent);
+    const updatedChatAgent = await handleToolCall(allToolCalls, chatAgent);
 
     // For responses endpoint, we need to use 'input' not 'messages'
     // Remove 'input' if it exists, and convert messages to input format
@@ -489,27 +486,19 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
       // and any new user messages after that
       // CRITICAL: Exclude ALL assistant messages (both with tool_calls and with content)
       const messagesAfterToolCalls = updatedChatAgent.currentMessage.slice(lastToolCallIndex + 1);
-      console.log('xAI Streaming - Messages after last tool_calls:', messagesAfterToolCalls.length);
-      console.log('xAI Streaming - Last tool call index:', lastToolCallIndex);
-      console.log('xAI Streaming - Messages after tool_calls (before filter):', JSON.stringify(messagesAfterToolCalls.map((m: any) => ({ role: m.role, hasToolCalls: !!m.tool_calls, hasContent: !!m.content })), null, 2));
 
       // First, filter out ALL assistant messages (regardless of whether they have tool_calls or content)
       const filteredMessages = messagesAfterToolCalls.filter((msg: any) => {
         // Exclude ALL assistant messages
         if (msg.role === 'assistant') {
-          console.log('xAI Streaming - Filtering out assistant message:', JSON.stringify({ role: msg.role, hasToolCalls: !!msg.tool_calls, hasContent: !!msg.content, contentType: Array.isArray(msg.content) ? 'array' : typeof msg.content }));
           return false;
         }
         // Only allow 'tool' and 'user' roles
         if (msg.role !== 'tool' && msg.role !== 'user') {
-          console.log('xAI Streaming - Filtering out unexpected role:', msg.role);
           return false;
         }
         return true;
       });
-
-      console.log('xAI Streaming - Messages after filter:', filteredMessages.length);
-      console.log('xAI Streaming - Filtered messages:', JSON.stringify(filteredMessages.map((m: any) => ({ role: m.role })), null, 2));
 
       const inputMessages = filteredMessages
         .map((msg: any) => {
@@ -571,7 +560,6 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
           // For other message types, keep as-is
           return msg;
         });
-      console.log('xAI Streaming - Final input messages for recursive call:', JSON.stringify(inputMessages, null, 2));
       secondPayload.input = inputMessages;
     } else {
       // For chat completions endpoint, use messages
@@ -591,16 +579,11 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
     // Ensure message is added if it wasn't added in response.completed or response.done
     // This handles cases where the stream ends without those events
     if (message && !chatAgent.currentMessage.some((msg: any) => msg.role === 'assistant' && !msg.tool_calls)) {
-      console.log('xAI Streaming - Adding assistant message in else block (stream ended):', message);
       chatAgent.currentMessage.push({
         role: 'assistant',
         content: message, // Use string format to match OpenAI/chat completions format
       });
-    } else if (!message) {
-      console.log('xAI Streaming - No message accumulated, finalToolCalls.length:', finalToolCalls.length);
     }
-
-    console.log('xAI Streaming - Final currentMessage before thread creation:', JSON.stringify(chatAgent.currentMessage, null, 2));
 
     chatAgent.threadId = await createThreadMessage(
       chatAgent.req,
@@ -616,7 +599,6 @@ export const handleStream = async (chatAgent: ChatAgent, recursionDepth: number 
       thread_id: chatAgent.threadId,
       ...({ messages: chatAgent.currentMessage } as any), // Include full messages array for browser
     });
-    console.log('xAI Streaming - Sent done event with messages:', JSON.stringify(chatAgent.currentMessage, null, 2));
     chatAgent.res.end();
   }
 };
