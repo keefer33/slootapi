@@ -1,6 +1,6 @@
 import { ChatAgent, ChatResponse } from '../../types';
 import { getModelPricing } from '../utils/usage';
-import { handleToolCall } from './chatUtils';
+import { handleToolCall, cleanToolParameters } from './chatUtils';
 import { ToolCall } from '../../types';
 import { createThreadMessage } from '../../utils/threadsUtils';
 
@@ -13,7 +13,16 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
 
   // Convert messages to input format for responses endpoint if needed
   if (useResponsesEndpoint && chatAgent.payload.messages && !chatAgent.payload.input) {
-    const inputMessages = chatAgent.payload.messages.map((msg: any) => {
+    // Filter out assistant messages with tool_calls - responses endpoint doesn't accept them
+    const inputMessages = chatAgent.payload.messages
+      .filter((msg: any) => {
+        // Exclude assistant messages with tool_calls
+        if (msg.role === 'assistant' && msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+          return false;
+        }
+        return true;
+      })
+      .map((msg: any) => {
       if (msg.content && Array.isArray(msg.content)) {
         return {
           role: msg.role,
@@ -54,6 +63,38 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
     });
     (chatAgent.payload as any).input = inputMessages;
     delete chatAgent.payload.messages;
+  }
+
+  // Ensure tools are in the correct format for responses endpoint
+  // This is needed because tools might be added after agentXaiPayload is called (e.g., from MCP servers)
+  if (useResponsesEndpoint && chatAgent.payload.tools && Array.isArray(chatAgent.payload.tools)) {
+    console.log(`xAI Non-Streaming - Converting ${chatAgent.payload.tools.length} tools to responses endpoint format. Tools before conversion:`, chatAgent.payload.tools.map((t: any) => ({ type: t.type, name: t.name || t.function?.name, hasFunction: !!t.function })));
+    chatAgent.payload.tools = chatAgent.payload.tools.map((tool: any) => {
+      // If tool is in chat completions format, convert to responses endpoint format
+      if (tool.type === 'function' && tool.function && !tool.name) {
+        // Clean up parameters (fix enum objects to values)
+        const cleanedParameters = cleanToolParameters(tool.function.parameters || {});
+        return {
+          type: 'function',
+          name: tool.function.name,
+          description: tool.function.description || '',
+          parameters: cleanedParameters,
+        };
+      }
+      // If tool already has name at top level, clean its parameters
+      if (tool.name && tool.parameters) {
+        return {
+          ...tool,
+          parameters: cleanToolParameters(tool.parameters),
+        };
+      }
+      // For search tools, keep as-is
+      if (tool.type === 'web_search' || tool.type === 'x_search') {
+        return tool;
+      }
+      return tool;
+    });
+    console.log(`xAI Non-Streaming - Tools after conversion:`, chatAgent.payload.tools.map((t: any) => ({ type: t.type, name: t.name, hasParameters: !!t.parameters })));
   }
 
   let response: any;
@@ -105,10 +146,152 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
         toolCalls as ToolCall[],
         chatAgent
       );
-      const secondPayload = {
+
+      // For responses endpoint, we need to use 'input' not 'messages'
+      // Remove 'input' if it exists, and convert messages to input format
+      const secondPayload: any = {
         ...updatedChatAgent.payload,
-        messages: [...updatedChatAgent.currentMessage],
       };
+
+      // Remove old input and messages to avoid conflicts
+      delete secondPayload.input;
+      delete secondPayload.messages;
+
+      // Convert currentMessage to input format for responses endpoint
+      if (useResponsesEndpoint) {
+        // For responses endpoint, we should only include the most recent tool results
+        // Exclude all assistant messages (with or without tool_calls) and previous conversation
+        // Find the most recent assistant message with tool_calls to identify which tool results to include
+        let lastToolCallIndex = -1;
+        for (let i = updatedChatAgent.currentMessage.length - 1; i >= 0; i--) {
+          const msg = updatedChatAgent.currentMessage[i];
+          if (msg.role === 'assistant' && msg.tool_calls && Array.isArray(msg.tool_calls)) {
+            lastToolCallIndex = i;
+            break;
+          }
+        }
+
+        // Only include tool results that come after the last assistant message with tool_calls
+        // and any new user messages after that
+        // CRITICAL: Exclude ALL assistant messages (both with tool_calls and with content)
+        const messagesAfterToolCalls = updatedChatAgent.currentMessage.slice(lastToolCallIndex + 1);
+        console.log('xAI Non-Streaming - Messages after last tool_calls:', messagesAfterToolCalls.length);
+        console.log('xAI Non-Streaming - Last tool call index:', lastToolCallIndex);
+        console.log('xAI Non-Streaming - Messages after tool_calls (before filter):', JSON.stringify(messagesAfterToolCalls.map((m: any) => ({ role: m.role, hasToolCalls: !!m.tool_calls, hasContent: !!m.content })), null, 2));
+
+        // First, filter out ALL assistant messages (regardless of whether they have tool_calls or content)
+        const filteredMessages = messagesAfterToolCalls.filter((msg: any) => {
+          // Exclude ALL assistant messages
+          if (msg.role === 'assistant') {
+            console.log('xAI Non-Streaming - Filtering out assistant message:', JSON.stringify({ role: msg.role, hasToolCalls: !!msg.tool_calls, hasContent: !!msg.content }));
+            return false;
+          }
+          // Only allow 'tool' and 'user' roles
+          if (msg.role !== 'tool' && msg.role !== 'user') {
+            console.log('xAI Non-Streaming - Filtering out unexpected role:', msg.role);
+            return false;
+          }
+          return true;
+        });
+
+        console.log('xAI Non-Streaming - Messages after filter:', filteredMessages.length);
+        console.log('xAI Non-Streaming - Filtered messages:', JSON.stringify(filteredMessages.map((m: any) => ({ role: m.role })), null, 2));
+
+        const inputMessages = filteredMessages
+          .map((msg: any) => {
+            // Handle tool results - responses endpoint expects specific format
+            // Note: 'name' field is only allowed for 'user' messages, not 'tool' messages
+            // Tool content must be a string, not an array
+            if (msg.role === 'tool') {
+              let toolContent = '';
+              if (typeof msg.content === 'string') {
+                toolContent = msg.content;
+              } else if (Array.isArray(msg.content)) {
+                // Extract text from array format
+                toolContent = msg.content
+                  .map((item: any) => {
+                    if (item.type === 'output_text' || item.type === 'text') {
+                      return item.text || '';
+                    }
+                    return typeof item === 'string' ? item : JSON.stringify(item);
+                  })
+                  .join('');
+              } else {
+                toolContent = JSON.stringify(msg.content);
+              }
+              return {
+                role: 'tool',
+                content: toolContent,
+                tool_call_id: msg.tool_call_id || msg.call_id,
+                // Do not include 'name' field - it's only allowed for user messages
+              };
+            }
+
+            if (msg.role === 'user') {
+              if (msg.content && Array.isArray(msg.content)) {
+                return {
+                  role: 'user',
+                  content: msg.content.map((contentItem: any) => {
+                    if (contentItem.type === 'text') {
+                      return {
+                        type: 'input_text',
+                        text: contentItem.text || '',
+                      };
+                    }
+                    return contentItem;
+                  }),
+                };
+              }
+              if (typeof msg.content === 'string') {
+                return {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'input_text',
+                      text: msg.content,
+                    },
+                  ],
+                };
+              }
+            }
+            // For other message types, keep as-is
+            return msg;
+          });
+        secondPayload.input = inputMessages;
+      } else {
+        // For chat completions endpoint, use messages
+        secondPayload.messages = [...updatedChatAgent.currentMessage];
+      }
+
+      // Ensure tools are in the correct format for responses endpoint
+      if (useResponsesEndpoint && secondPayload.tools && Array.isArray(secondPayload.tools)) {
+        secondPayload.tools = secondPayload.tools.map((tool: any) => {
+          // If tool is in chat completions format, convert to responses endpoint format
+          if (tool.type === 'function' && tool.function && !tool.name) {
+            // Clean up parameters (fix enum objects to values)
+            const cleanedParameters = cleanToolParameters(tool.function.parameters || {});
+            return {
+              type: 'function',
+              name: tool.function.name,
+              description: tool.function.description || '',
+              parameters: cleanedParameters,
+            };
+          }
+          // If tool already has name at top level, clean its parameters
+          if (tool.name && tool.parameters) {
+            return {
+              ...tool,
+              parameters: cleanToolParameters(tool.parameters),
+            };
+          }
+          // For search tools, keep as-is
+          if (tool.type === 'web_search' || tool.type === 'x_search') {
+            return tool;
+          }
+          return tool;
+        });
+      }
+
       updatedChatAgent.payload = secondPayload;
       await handleResponse(updatedChatAgent);
     } else {

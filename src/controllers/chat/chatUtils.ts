@@ -216,80 +216,111 @@ export const configureMCPServers = async (
     chatAgent.payload.tools = [];
   }
 
-  // Use Promise.all to wait for all async operations
-  await Promise.all(
+  // Use Promise.allSettled to handle individual server failures gracefully
+  const results = await Promise.allSettled(
     getMcpServers.map(async (server: any) => {
-      let connectToken;
-      if (server.type === 'connect' && server.auth_token) {
-        connectToken = server.auth_token;
-      } else if (server.type === 'public' || server.type === 'private') {
-        connectToken = req.user.token;
-      }
-
-      if (
-        server.server_url === `https://mcp.sloot.ai/${server.id}` &&
-        process.env.NODE_ENV &&
-        process.env.NODE_ENV !== 'development'
-      ) {
-        server.server_url = `http://slootmcp:3000/${server.id}`;
-      }
-      const transport = new StreamableHTTPClientTransport(
-        new URL(server.server_url),
-        {
-          requestInit: {
-            headers: {
-              Authorization: `Bearer ${connectToken}`,
-            },
-          },
+      try {
+        let connectToken;
+        if (server.type === 'connect' && server.auth_token) {
+          connectToken = server.auth_token;
+        } else if (server.type === 'public' || server.type === 'private') {
+          connectToken = req.user.token;
         }
-      );
 
-      // Initialize MCP client
-      const mcpClient = new Client({
-        name: server.server_name,
-        version: '1.0.0',
-      });
+        if (
+          server.server_url === `https://mcp.sloot.ai/${server.id}` &&
+          process.env.NODE_ENV &&
+          process.env.NODE_ENV !== 'development'
+        ) {
+          server.server_url = `http://slootmcp:3000/${server.id}`;
+        }
+        const transport = new StreamableHTTPClientTransport(
+          new URL(server.server_url),
+          {
+            requestInit: {
+              headers: {
+                Authorization: `Bearer ${connectToken}`,
+              },
+            },
+          }
+        );
 
-      await mcpClient.connect(transport as any);
-      chatAgent.mcpServers.push({
-        name: server.server_name,
-        client: mcpClient,
-      });
-      // Get available tools from MCP
-      const toolsResponse = await mcpClient.listTools();
-      const mcpTools = toolsResponse.tools || [];
-      const convertedTools = mcpTools
-        .map(tool => {
-          const checkedTool = chatAgent.payload.tools?.find(
-            (t: any) => t.function.name === tool.name
-          );
-          if (!checkedTool) {
-            return {
-              type: 'function',
-              function: {
-                name: tool.name,
-                description: tool.description || `Tool: ${tool.name}`,
-                parameters: {
-                  ...tool.inputSchema,
-                  properties: {
-                    ...tool.inputSchema.properties,
-                    tool_id: {
-                      type: 'string',
-                      description: 'Internal tool identifier',
-                      enum: [server.server_name],
+        // Initialize MCP client
+        const mcpClient = new Client({
+          name: server.server_name,
+          version: '1.0.0',
+        });
+
+        await mcpClient.connect(transport as any);
+        chatAgent.mcpServers.push({
+          name: server.server_name,
+          client: mcpClient,
+        });
+        // Get available tools from MCP
+        const toolsResponse = await mcpClient.listTools();
+        const mcpTools = toolsResponse.tools || [];
+        const convertedTools = mcpTools
+          .map(tool => {
+            const checkedTool = chatAgent.payload.tools?.find(
+              (t: any) => t.function.name === tool.name
+            );
+            if (!checkedTool) {
+              return {
+                type: 'function',
+                function: {
+                  name: tool.name,
+                  description: tool.description || `Tool: ${tool.name}`,
+                  parameters: {
+                    ...tool.inputSchema,
+                    properties: {
+                      ...tool.inputSchema.properties,
+                      tool_id: {
+                        type: 'string',
+                        description: 'Internal tool identifier',
+                        enum: [server.server_name],
+                      },
                     },
                   },
                 },
-              },
-            } as ChatTool;
-          }
-          return null; // Return null for duplicate tools
-        })
-        .filter(Boolean); // Remove null values
+              } as ChatTool;
+            }
+            return null; // Return null for duplicate tools
+          })
+          .filter(Boolean); // Remove null values
 
-      chatAgent.payload.tools?.push(...convertedTools);
+        chatAgent.payload.tools?.push(...convertedTools);
+        console.log(`xAI MCP - Added ${convertedTools.length} tools from MCP server '${server.server_name}':`, convertedTools.map((t: any) => t.function?.name || t.name).join(', '));
+        return { success: true, server: server.server_name };
+      } catch (error: any) {
+        // Log error but don't fail the entire request
+        console.error(
+          `Failed to load tools from MCP server '${server.server_name}' (${server.server_url}):`,
+          error.message || error
+        );
+        return { success: false, server: server.server_name, error: error.message || error };
+      }
     })
   );
+
+  // Log summary of MCP server loading results
+  const failedServers = results
+    .map((result, index) => {
+      if (result.status === 'rejected') {
+        return getMcpServers[index]?.server_name || `Server ${index}`;
+      }
+      if (result.status === 'fulfilled' && !result.value.success) {
+        return result.value.server;
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  if (failedServers.length > 0) {
+    console.warn(
+      `Warning: Failed to load tools from ${failedServers.length} MCP server(s):`,
+      failedServers.join(', ')
+    );
+  }
 
   return chatAgent;
 };
@@ -304,69 +335,99 @@ export const configurePipedreamMCPServers = async (
     chatAgent.payload.tools = [];
   }
 
-  // Use Promise.all to wait for all async operations
-  await Promise.all(
-    model.settings?.pipedream?.map(async tool => {
-      const pd = getPipedreamClient();
-      const accessToken = await pd.rawAccessToken;
-      // Create MCP transport
-      const transport = new StreamableHTTPClientTransport(
-        new URL('https://remote.mcp.pipedream.net'),
-        {
-          requestInit: {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'x-pd-project-id': process.env.PIPEDREAM_PROJECT_ID!,
-              'x-pd-environment': process.env.PIPEDREAM_ENVIRONMENT!,
-              'x-pd-external-user-id': req.user.userId,
-              'x-pd-app-slug': tool.name,
+  // Use Promise.allSettled to handle individual server failures gracefully
+  const results = await Promise.allSettled(
+    (model.settings?.pipedream?.map(async tool => {
+      try {
+        const pd = getPipedreamClient();
+        const accessToken = await pd.rawAccessToken;
+        // Create MCP transport
+        const transport = new StreamableHTTPClientTransport(
+          new URL('https://remote.mcp.pipedream.net'),
+          {
+            requestInit: {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'x-pd-project-id': process.env.PIPEDREAM_PROJECT_ID!,
+                'x-pd-environment': process.env.PIPEDREAM_ENVIRONMENT!,
+                'x-pd-external-user-id': req.user.userId,
+                'x-pd-app-slug': tool.name,
+              },
             },
-          },
-        }
-      );
-      // Initialize MCP client
-      const clientName = `${tool.name}-pipedream-client`;
-      const mcpClient = new Client({
-        name: clientName,
-        version: '1.0.0',
-      });
-      await mcpClient.connect(transport as any);
-      chatAgent.mcpServers.push({ name: clientName, client: mcpClient });
+          }
+        );
+        // Initialize MCP client
+        const clientName = `${tool.name}-pipedream-client`;
+        const mcpClient = new Client({
+          name: clientName,
+          version: '1.0.0',
+        });
+        await mcpClient.connect(transport as any);
+        chatAgent.mcpServers.push({ name: clientName, client: mcpClient });
 
-      // Get available tools from MCP
-      const toolsResponse = await mcpClient.listTools();
-      const mcpTools = toolsResponse.tools || [];
-      const convertedTools = mcpTools
-        .map(tool => {
-          const checkedTool = chatAgent.payload.tools?.find(
-            (t: any) => t.function.name === tool.name
-          );
-          if (!checkedTool) {
-            return {
-              type: 'function',
-              function: {
-                name: tool.name,
-                description: tool.description || `Tool: ${tool.name}`,
-                parameters: {
-                  ...tool.inputSchema,
-                  properties: {
-                    ...tool.inputSchema.properties,
-                    tool_id: {
-                      type: 'string',
-                      description: 'Internal tool identifier',
-                      enum: [clientName],
+        // Get available tools from MCP
+        const toolsResponse = await mcpClient.listTools();
+        const mcpTools = toolsResponse.tools || [];
+        const convertedTools = mcpTools
+          .map(tool => {
+            const checkedTool = chatAgent.payload.tools?.find(
+              (t: any) => t.function.name === tool.name
+            );
+            if (!checkedTool) {
+              return {
+                type: 'function',
+                function: {
+                  name: tool.name,
+                  description: tool.description || `Tool: ${tool.name}`,
+                  parameters: {
+                    ...tool.inputSchema,
+                    properties: {
+                      ...tool.inputSchema.properties,
+                      tool_id: {
+                        type: 'string',
+                        description: 'Internal tool identifier',
+                        enum: [clientName],
+                      },
                     },
                   },
                 },
-              },
-            } as ChatTool;
-          }
-          return null; // Return null for duplicate tools
-        })
-        .filter(Boolean); // Remove null values
-      chatAgent.payload.tools?.push(...convertedTools);
-    }) || []
+              } as ChatTool;
+            }
+            return null; // Return null for duplicate tools
+          })
+          .filter(Boolean); // Remove null values
+        chatAgent.payload.tools?.push(...convertedTools);
+        return { success: true, tool: tool.name };
+      } catch (error: any) {
+        // Log error but don't fail the entire request
+        console.error(
+          `Failed to load tools from Pipedream MCP server '${tool.name}':`,
+          error.message || error
+        );
+        return { success: false, tool: tool.name, error: error.message || error };
+      }
+    }) || [])
   );
+
+  // Log summary of Pipedream MCP server loading results
+  const failedTools = results
+    .map((result, index) => {
+      if (result.status === 'rejected') {
+        return model.settings?.pipedream?.[index]?.name || `Tool ${index}`;
+      }
+      if (result.status === 'fulfilled' && !result.value.success) {
+        return result.value.tool;
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  if (failedTools.length > 0) {
+    console.warn(
+      `Warning: Failed to load tools from ${failedTools.length} Pipedream MCP server(s):`,
+      failedTools.join(', ')
+    );
+  }
   return chatAgent;
 };
 
@@ -456,6 +517,40 @@ const mapTools = (tools: any[]) => {
   });
 };
 
+// Helper function to clean up tool parameters - converts enum objects to values
+export const cleanToolParameters = (parameters: any): any => {
+  if (!parameters || typeof parameters !== 'object') {
+    return parameters;
+  }
+
+  const cleaned: any = { ...parameters };
+
+  // Clean up properties
+  if (cleaned.properties && typeof cleaned.properties === 'object') {
+    cleaned.properties = { ...cleaned.properties };
+    for (const key in cleaned.properties) {
+      const prop = cleaned.properties[key];
+      if (prop && typeof prop === 'object' && prop.enum && Array.isArray(prop.enum)) {
+        // Check if enum contains objects with 'value' property
+        const hasObjectValues = prop.enum.some((item: any) =>
+          item && typeof item === 'object' && 'value' in item
+        );
+        if (hasObjectValues) {
+          // Extract 'value' from each enum item
+          cleaned.properties[key] = {
+            ...prop,
+            enum: prop.enum.map((item: any) =>
+              item && typeof item === 'object' && 'value' in item ? item.value : item
+            ),
+          };
+        }
+      }
+    }
+  }
+
+  return cleaned;
+};
+
 const agentXaiPayload = async (model: UserModel, payload: ChatPayload) => {
   // Grok built-in search tools
   // When search tools are enabled, we need to use the /responses endpoint
@@ -479,6 +574,8 @@ const agentXaiPayload = async (model: UserModel, payload: ChatPayload) => {
       payload.tools = [];
     }
 
+    console.log(`xAI agentXaiPayload - Tools at start: ${payload.tools?.length || 0}`, payload.tools?.map((t: any) => ({ type: t.type, name: t.name || t.function?.name })));
+
     // Convert function tools to responses endpoint format and filter out search tools
     // Responses endpoint expects: { type: 'function', name: '...', description: '...', parameters: {...} }
     const convertedFunctionTools: any[] = [];
@@ -487,11 +584,13 @@ const agentXaiPayload = async (model: UserModel, payload: ChatPayload) => {
         if (tool.type === 'function' && tool.function) {
           // Convert to responses endpoint format - name must be at top level
           if (tool.function.name) {
+            // Clean up parameters (fix enum objects to values)
+            const cleanedParameters = cleanToolParameters(tool.function.parameters || {});
             convertedFunctionTools.push({
               type: 'function',
               name: tool.function.name,
               description: tool.function.description || '',
-              parameters: tool.function.parameters || {},
+              parameters: cleanedParameters,
             });
           }
         } else if (
@@ -506,11 +605,13 @@ const agentXaiPayload = async (model: UserModel, payload: ChatPayload) => {
           } else if (tool.type === 'function') {
             // Try to extract name from function if it exists
             if (tool.function?.name) {
+              // Clean up parameters (fix enum objects to values)
+              const cleanedParameters = cleanToolParameters(tool.function.parameters || {});
               convertedFunctionTools.push({
                 type: 'function',
                 name: tool.function.name,
                 description: tool.function.description || '',
-                parameters: tool.function.parameters || {},
+                parameters: cleanedParameters,
               });
             }
           }
@@ -605,10 +706,9 @@ const agentXaiPayload = async (model: UserModel, payload: ChatPayload) => {
       console.warn(
         'xAI search tools skipped: No function tools found and no search sources (x/web) specified in search_parameters.sources.'
       );
-      // Don't set tools array or set it to empty
-      if (payload.tools) {
-        payload.tools = [];
-      }
+      // Don't clear tools array - MCP tools might be added later
+      // Just leave payload.tools as-is (it might be undefined or empty, which is fine)
+      // If tools are added later (e.g., from MCP servers), they'll be converted in the handlers
     }
   }
 
