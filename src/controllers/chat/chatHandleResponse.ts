@@ -68,7 +68,6 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
   // Ensure tools are in the correct format for responses endpoint
   // This is needed because tools might be added after agentXaiPayload is called (e.g., from MCP servers)
   if (useResponsesEndpoint && chatAgent.payload.tools && Array.isArray(chatAgent.payload.tools)) {
-    console.log(`xAI Non-Streaming - Converting ${chatAgent.payload.tools.length} tools to responses endpoint format. Tools before conversion:`, chatAgent.payload.tools.map((t: any) => ({ type: t.type, name: t.name || t.function?.name, hasFunction: !!t.function })));
     chatAgent.payload.tools = chatAgent.payload.tools.map((tool: any) => {
       // If tool is in chat completions format, convert to responses endpoint format
       if (tool.type === 'function' && tool.function && !tool.name) {
@@ -94,16 +93,12 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
       }
       return tool;
     });
-    console.log(`xAI Non-Streaming - Tools after conversion:`, chatAgent.payload.tools.map((t: any) => ({ type: t.type, name: t.name, hasParameters: !!t.parameters })));
   }
 
   let response: any;
   if (useResponsesEndpoint) {
     // Use responses endpoint for xAI search tools
     response = await chatAgent.api!.responses.create(chatAgent.payload);
-
-    // Debug: Log response structure to understand the format
-    console.log('xAI Responses API response:', JSON.stringify(response, null, 2));
 
     // Handle responses API format
     if (!response?.output) {
@@ -136,14 +131,19 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
         },
       }));
 
-    if (toolCalls.length > 0) {
+    // Filter out any null/undefined tool calls (safety check)
+    const validToolCalls = toolCalls.filter(
+      (tc: any): tc is NonNullable<typeof tc> => tc != null && tc.function != null
+    );
+
+    if (validToolCalls.length > 0) {
       chatAgent.currentMessage.push({
         role: 'assistant',
-        tool_calls: toolCalls,
+        tool_calls: validToolCalls,
       });
 
       const updatedChatAgent = await handleToolCall(
-        toolCalls as ToolCall[],
+        validToolCalls as ToolCall[],
         chatAgent
       );
 
@@ -175,27 +175,19 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
         // and any new user messages after that
         // CRITICAL: Exclude ALL assistant messages (both with tool_calls and with content)
         const messagesAfterToolCalls = updatedChatAgent.currentMessage.slice(lastToolCallIndex + 1);
-        console.log('xAI Non-Streaming - Messages after last tool_calls:', messagesAfterToolCalls.length);
-        console.log('xAI Non-Streaming - Last tool call index:', lastToolCallIndex);
-        console.log('xAI Non-Streaming - Messages after tool_calls (before filter):', JSON.stringify(messagesAfterToolCalls.map((m: any) => ({ role: m.role, hasToolCalls: !!m.tool_calls, hasContent: !!m.content })), null, 2));
 
         // First, filter out ALL assistant messages (regardless of whether they have tool_calls or content)
         const filteredMessages = messagesAfterToolCalls.filter((msg: any) => {
           // Exclude ALL assistant messages
           if (msg.role === 'assistant') {
-            console.log('xAI Non-Streaming - Filtering out assistant message:', JSON.stringify({ role: msg.role, hasToolCalls: !!msg.tool_calls, hasContent: !!msg.content }));
             return false;
           }
           // Only allow 'tool' and 'user' roles
           if (msg.role !== 'tool' && msg.role !== 'user') {
-            console.log('xAI Non-Streaming - Filtering out unexpected role:', msg.role);
             return false;
           }
           return true;
         });
-
-        console.log('xAI Non-Streaming - Messages after filter:', filteredMessages.length);
-        console.log('xAI Non-Streaming - Filtered messages:', JSON.stringify(filteredMessages.map((m: any) => ({ role: m.role })), null, 2));
 
         const inputMessages = filteredMessages
           .map((msg: any) => {
@@ -318,11 +310,6 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
         }
       }
 
-      // Debug: Log to see what we're getting
-      console.log('xAI Non-Streaming - Response output:', JSON.stringify(response.output, null, 2));
-      console.log('xAI Non-Streaming - Extracted text content:', finalTextContent);
-      console.log('xAI Non-Streaming - currentMessage before push:', JSON.stringify(chatAgent.currentMessage, null, 2));
-
       // Format message to match chat completions format for browser compatibility
       // Use string format for assistant messages (OpenAI format)
       const assistantMessage: any = {
@@ -331,8 +318,6 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
       };
 
       chatAgent.currentMessage.push(assistantMessage);
-
-      console.log('xAI Non-Streaming - currentMessage after push:', JSON.stringify(chatAgent.currentMessage, null, 2));
 
       chatAgent.threadId = await createThreadMessage(
         chatAgent.req,
@@ -366,7 +351,6 @@ export const handleResponse = async (chatAgent: ChatAgent): Promise<void> => {
         raw_response: response,
       };
 
-      console.log('xAI Non-Streaming - Final successResponse:', JSON.stringify(successResponse, null, 2));
       chatAgent.res.status(200).json(successResponse);
     }
   } else {

@@ -216,6 +216,16 @@ export const configureMCPServers = async (
     chatAgent.payload.tools = [];
   }
 
+  // Log existing tools before adding MCP tools
+  const existingToolsCount = chatAgent.payload.tools.length;
+  console.log(`xAI MCP - Starting MCP server configuration. Existing tools: ${existingToolsCount}`,
+    chatAgent.payload.tools.map((t: any) => ({
+      name: t.name || t.function?.name,
+      type: t.type,
+      format: t.name ? 'responses' : 'chat_completions'
+    }))
+  );
+
   // Use Promise.allSettled to handle individual server failures gracefully
   const results = await Promise.allSettled(
     getMcpServers.map(async (server: any) => {
@@ -261,8 +271,19 @@ export const configureMCPServers = async (
         const mcpTools = toolsResponse.tools || [];
         const convertedTools = mcpTools
           .map(tool => {
+            // Check for duplicates in both chat completions format (t.function.name) and responses endpoint format (t.name)
             const checkedTool = chatAgent.payload.tools?.find(
-              (t: any) => t.function.name === tool.name
+              (t: any) => {
+                // Check chat completions format
+                if (t.function?.name === tool.name) {
+                  return true;
+                }
+                // Check responses endpoint format
+                if (t.name === tool.name) {
+                  return true;
+                }
+                return false;
+              }
             );
             if (!checkedTool) {
               return {
@@ -284,6 +305,7 @@ export const configureMCPServers = async (
                 },
               } as ChatTool;
             }
+            console.log(`xAI MCP - Skipping duplicate tool '${tool.name}' from server '${server.server_name}'`);
             return null; // Return null for duplicate tools
           })
           .filter(Boolean); // Remove null values
@@ -321,6 +343,17 @@ export const configureMCPServers = async (
       failedServers.join(', ')
     );
   }
+
+  // Log final tool count after MCP server configuration
+  const finalToolsCount = chatAgent.payload.tools?.length || 0;
+  console.log(`xAI MCP - MCP server configuration complete. Total tools: ${finalToolsCount} (${existingToolsCount} existing + ${finalToolsCount - existingToolsCount} from MCP servers)`,
+    chatAgent.payload.tools?.map((t: any) => ({
+      name: t.name || t.function?.name,
+      type: t.type,
+      format: t.name ? 'responses' : 'chat_completions',
+      hasToolId: !!(t.parameters?.properties?.tool_id || t.function?.parameters?.properties?.tool_id)
+    }))
+  );
 
   return chatAgent;
 };
