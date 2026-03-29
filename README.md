@@ -1,336 +1,189 @@
 # slootAPI
 
-**Backend API for [sloot.ai](https://sloot.ai)**
+## 🛠️ Overview
 
-slootAPI is the robust backend service powering [sloot.ai](https://sloot.ai), providing a comprehensive REST API for AI agent management, tool execution, authentication, and more.
+slootAPI is the Express backend for [sloot.ai](https://sloot.ai): JWT auth, agent loading, tool execution, Pipedream actions, Flux image routes, payments, account/API keys, Coolify proxy routes, webhooks, and streaming-friendly handlers.
 
-## 🌐 About
+## 🌐 Website
 
-slootAPI serves as the core backend infrastructure for [sloot.ai](https://sloot.ai), enabling seamless integration with multiple AI providers, tool execution, payment processing, and user management. Built with Express.js and TypeScript, it provides a scalable and maintainable foundation for the Sloot platform.
+[https://sloot.ai](https://sloot.ai)
 
-Visit **[sloot.ai](https://sloot.ai)** to experience the full platform.
+## ⭐ Features
 
-## 🚀 Features
+- 🤖 **Multi-provider AI** — Anthropic, OpenAI, Gemini, xAI, and related chat tooling
+- 🧰 **Tools** — Run registered tools, list Sloot tools, polling file helpers
+- 🔌 **Pipedream** — Connect tokens, apps, accounts, and action runs
+- 💳 **Payments** — Stripe intents, balance, transactions, usage deduction
+- 🎨 **Flux** — BFL Flux image routes (Kontext, Pro, Dev, Ultra, etc.)
+- 🖥️ **Coolify** — Applications, databases, servers, services, user cloud records
+- 📡 **Webhooks** — Kie.ai and polling callbacks
+- 🔐 **JWT** — `verifyJWT` on protected route groups
 
-- **Multi-AI Provider Support** - Integration with Anthropic, OpenAI, Google Gemini, and xAI
-- **Tool Execution** - Execute custom tools and integrations including Pipedream workflows
-- **Authentication & Authorization** - JWT-based authentication with secure user management
-- **Payment Processing** - Integrated payment handling for subscriptions and usage
-- **Coolify Integration** - Server and resource management through Coolify
-- **Flux Image Generation** - Multiple Flux model endpoints for image generation
-- **Streaming Support** - Real-time streaming responses for chat completions
-- **Webhook Support** - Webhook endpoints for external integrations
-- **Security** - Helmet.js for security headers, CORS configuration
-- **Logging** - Morgan HTTP request logger
-- **TypeScript** - Full type safety and modern JavaScript features
-
-## 📁 Project Structure
+## 📁 Project structure
 
 ```
-slootapi/
-├── src/
-│   ├── config/              # Configuration files
-│   ├── controllers/         # Request handlers
-│   │   ├── authController.ts
-│   │   ├── agentController.ts
-│   │   ├── toolsController.ts
-│   │   ├── paymentController.ts
-│   │   ├── chat/           # Chat completion handlers
-│   │   ├── anthropic/      # Anthropic-specific handlers
-│   │   ├── openai/         # OpenAI-specific handlers
-│   │   └── utils/          # Utility controllers
-│   ├── middleware/         # Express middleware
-│   │   ├── auth.ts
-│   │   ├── jwtAuth.ts
-│   │   └── getAgent.ts
-│   ├── routes/             # API route definitions
-│   │   ├── authRoutes.ts
-│   │   ├── agentRoutes.ts
-│   │   ├── toolsRoutes.ts
-│   │   ├── paymentRoutes.ts
-│   │   ├── accountRoutes.ts
-│   │   ├── coolify/        # Coolify integration routes
-│   │   └── tools/          # Tool-specific routes
-│   ├── utils/              # Utility functions
-│   │   ├── agentUtils.ts
-│   │   ├── runToolUtils.ts
-│   │   ├── streamingUtils.ts
-│   │   └── supabaseClient.ts
-│   ├── types/              # TypeScript type definitions
-│   └── index.ts            # Main application entry point
-├── package.json
-├── env.example             # Environment variables template
-└── README.md
+src/
+├── controllers/
+├── middleware/
+├── routes/
+│   ├── tools/flux/
+│   └── coolify/
+├── utils/
+├── types/
+├── routes/index.ts    # Mounts route modules (see Endpoints)
+└── index.ts
 ```
 
-## 🛠️ Installation
+## 🔐 Authentication
 
-1. **Clone the repository**
+Protected route groups use JWT middleware (`verifyJWT`). Send:
 
-   ```bash
-   git clone <repository-url>
-   cd slootapi
-   ```
-
-2. **Install dependencies**
-
-   ```bash
-   npm install
-   ```
-
-3. **Set up environment variables**
-
-   ```bash
-   cp env.example .env
-   # Edit .env with your configuration
-   ```
-
-4. **Start the development server**
-
-   ```bash
-   npm run dev
-   ```
-
-## 📡 API Endpoints
-
-### Health Check
-
-- `GET /api/healthcheck` - Server health status
-
-### Authentication
-
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - User login
-- `POST /api/auth/logout` - User logout
-- `GET /api/auth/me` - Get current user
-- `POST /api/auth/refresh` - Refresh access token
-
-### AI Agents
-
-- `POST /api/agents` - Create and manage AI agents
-- `POST /api/agents/anthropic` - Anthropic Claude agent endpoints
-- `POST /api/agents/openai` - OpenAI agent endpoints
-- `POST /api/agents/gemini` - Google Gemini agent endpoints
-- `POST /api/agents/xai` - xAI agent endpoints
-
-### Tools
-
-- `GET /api/tools` - List available tools
-- `POST /api/tools/execute` - Execute a tool
-- `POST /api/flux/*` - Flux image generation endpoints
-
-### Payments
-
-- `POST /api/payments` - Payment processing endpoints
-
-### Account Management
-
-- `GET /api/account` - Get account information
-- `GET /api/account/apikeys` - Manage API keys
-
-### Coolify Integration
-
-- `GET /api/coolify/resources` - Manage Coolify resources
-- `GET /api/coolify/applications` - Manage Coolify applications
-- `GET /api/coolify/databases` - Manage Coolify databases
-- `GET /api/coolify/servers` - Manage Coolify servers
-- `GET /api/coolify/services` - Manage Coolify services
-- `GET /api/coolify/user-databases` - Manage user databases
-
-### Webhooks
-
-- `POST /api/webhooks` - Webhook endpoints for external integrations
-
-## 🔧 Configuration
-
-### Environment Variables
-
-Copy `env.example` to `.env` and configure:
-
-```env
-# Server Configuration
-PORT=3001
-NODE_ENV=development
-
-# JWT Configuration
-JWT_SECRET=your-super-secret-jwt-key-here
-JWT_EXPIRES_IN=7d
-
-# Database Configuration
-DATABASE_URL=your-database-connection-string
-
-# CORS Configuration
-CORS_ORIGIN=http://localhost:3000
-
-# Supabase Configuration
-SUPABASE_URL=your-supabase-url
-SUPABASE_KEY=your-supabase-key
-
-# AI Provider API Keys
-ANTHROPIC_API_KEY=your-anthropic-key
-OPENAI_API_KEY=your-openai-key
-GEMINI_API_KEY=your-gemini-key
-XAI_API_KEY=your-xai-key
-
-# Pipedream Configuration
-PIPEDREAM_API_KEY=your-pipedream-key
-
-# Payment Configuration
-STRIPE_SECRET_KEY=your-stripe-secret-key
+```http
+Authorization: Bearer <token>
 ```
 
-## 🚀 Available Scripts
+`POST /auth/create-token` mints or exchanges tokens (see `authController`).
 
-- `npm start` - Start production server
-- `npm run dev` - Start development server with nodemon
-- `npm test` - Run tests
-- `npm run lint` - Check for linting issues
-- `npm run lint:fix` - Automatically fix linting issues
-- `npm run format` - Format all files with Prettier
-- `npm run format:check` - Check if files are properly formatted
-- `npm run check` - Run both linting and format checking
+## 📡 Endpoints
 
-## 🔒 Security Features
+Paths are mounted at the **server root** (no `/api` prefix) as defined in `src/routes/index.ts`. Replace `{origin}` with your API base URL.
 
-- **Helmet.js** - Security headers
-- **CORS** - Cross-origin resource sharing
-- **JWT Authentication** - Token-based authentication
-- **Input Validation** - Request data validation
-- **Error Handling** - Secure error responses
-- **Environment Variables** - Secure configuration management
+### ✅ Root & health
 
-## 📊 Response Format
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/` | No | API info and route index |
+| `GET` | `/healthcheck` | No | Health check |
 
-All API responses follow a consistent format:
+### 🔑 Auth
 
-**Success Response:**
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/auth/create-token` | No | Create / exchange token |
 
-```json
-{
-  "success": true,
-  "data": {},
-  "message": "Operation successful"
-}
-```
+### 🤖 Agents
 
-**Error Response:**
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/agents` | Yes | Load agent (`loadAgent`) |
 
-```json
-{
-  "success": false,
-  "error": "Error type",
-  "message": "Detailed error message"
-}
-```
+### 🧰 Tools
 
-## 🎨 Code Quality
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/tools/run` | Yes | Execute tool |
+| `GET` | `/tools/sloot` | Yes | Load Sloot tools |
+| `GET` | `/tools/polling-files` | Yes | List polling files |
+| `GET` | `/tools/polling-file/:id` | Yes | Polling file by id |
 
-This project uses **ESLint** and **Prettier** for code quality and formatting.
+### 🔌 Pipedream
 
-### Available Scripts
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/pipedream` | Yes | Smoke / status |
+| `GET` | `/pipedream/connect/token` | Yes | Create connect token |
+| `POST` | `/pipedream/run` | Yes | Run Pipedream action |
+| `GET` | `/pipedream/apps` | Yes | List apps |
+| `GET` | `/pipedream/app/:appId` | Yes | App detail |
+| `GET` | `/pipedream/app/categories` | Yes | App categories |
+| `POST` | `/pipedream/accounts/list` | Yes | List accounts |
+| `GET` | `/pipedream/account/app/:accountId` | Yes | Account app |
+| `POST` | `/pipedream/account/tools/delete` | Yes | Delete tools for account |
+| `POST` | `/pipedream/account/delete` | Yes | Delete connected account |
 
-```bash
-# Linting
-npm run lint          # Check for linting issues
-npm run lint:fix      # Automatically fix linting issues
+### 🛠️ Utils
 
-# Formatting
-npm run format        # Format all files with Prettier
-npm run format:check  # Check if files are properly formatted
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/utils/json-formatter` | Yes | Format JSON |
+| `POST` | `/utils/tools-schema-generator` | Yes | Tools schema helper |
+| `POST` | `/utils/chat-completions` | Yes | Chat completions utility |
 
-# Combined check
-npm run check         # Run both linting and format checking
-```
+### 💳 Payments
 
-### Configuration Files
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/payments/create-intent` | Yes | Create payment intent |
+| `POST` | `/payments/confirm` | Yes | Confirm payment |
+| `POST` | `/payments/add-funds` | Yes | Add funds |
+| `POST` | `/payments/deduct-usage` | Yes | Deduct usage |
+| `GET` | `/payments/balance` | Yes | Balance |
+| `GET` | `/payments/transactions` | Yes | Transactions |
 
-- **`.prettierrc`** - Prettier configuration
-- **`.prettierignore`** - Files to ignore during formatting
-- **`eslint.config.js`** - ESLint configuration (v9 format)
-- **`.vscode/settings.json`** - VS Code integration settings
+### 👤 Account
 
-### VS Code Integration
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/account/apikeys` | Yes | List API keys (masked) |
 
-The project includes VS Code settings for automatic formatting and linting:
+### 🎨 Flux (BFL)
 
-- **Format on Save** - Automatically format files when saving
-- **ESLint Integration** - Show linting errors and warnings in real-time
-- **Prettier as Default Formatter** - Use Prettier for all formatting
+Each Flux family exposes **create**, **poll**, and **generate** routes under `/flux`:
 
-### Recommended Extensions
+| Prefix | Verbs |
+|--------|--------|
+| `/flux/flux-kontext-pro` | `POST` create, `GET` poll, `POST` generate |
+| `/flux/flux-kontext-max` | same |
+| `/flux/flux-pro` | same |
+| `/flux/flux-dev` | same |
+| `/flux/flux-pro-ultra` | same |
 
-Install these VS Code extensions for the best development experience:
+All require JWT.
 
-- **Prettier - Code formatter** (`esbenp.prettier-vscode`)
-- **ESLint** (`dbaeumer.vscode-eslint`)
+### 🖥️ Coolify
 
-### Code Style
+JWT required. High-level groups (see `src/routes/coolify/coolifyRoutes.ts` for full list):
 
-The project follows these code style guidelines:
+| Group | Examples |
+|--------|----------|
+| Resources | `GET /coolify/resources`, `GET /coolify/resources/:id` |
+| Applications | `GET /coolify/applications`, lifecycle `.../start|stop|restart` |
+| Databases | `GET /coolify/databases`, `POST` create by engine, start/stop/restart, `PATCH`/`DELETE` by uuid |
+| Servers | `GET|POST|PATCH|DELETE /coolify/servers`, resources, domains, validate |
+| Services | create/update/delete, env CRUD, start/stop/restart, user cloud DB linkage |
+| User DBs | `GET|POST|PATCH|DELETE /coolify/user-databases`, `GET .../uuid/:uuid` |
 
-- **Single quotes** for strings
-- **Semicolons** at the end of statements
-- **2 spaces** for indentation
-- **80 characters** line length
-- **Trailing commas** in objects and arrays
-- **No unused variables** (use `_` prefix for intentionally unused variables)
+### 🪝 Webhooks
 
-## 🔄 Development
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/webhooks/kieai` | No | Kie.ai webhook |
+| `POST` | `/webhooks/polling` | No | Supabase polling webhook |
+| `GET` | `/webhooks/polling` | No | Polling probe |
 
-### Adding New Routes
+## 🔗 Integrations
 
-1. Create a new route file in `src/routes/`
-2. Create corresponding controller in `src/controllers/`
-3. Import and use the route in `src/routes/index.ts`
+| Integration | Role |
+|-------------|------|
+| 🖥️ [Coolify](https://coolify.io/) | Server and resource management |
+| 🔌 [Pipedream](https://pipedream.com/) | Connected apps and actions |
+| ▲ [Vercel AI Gateway](https://vercel.com/ai-gateway) | Optional model routing |
+| 🗄️ [Supabase](https://supabase.com/) | Database and auth |
+| 💳 [Stripe](https://stripe.com/) | Payments |
 
-### Adding Middleware
+## 🧱 Tech stack
 
-1. Create middleware in `src/middleware/`
-2. Import and use in routes or main app
+- 🟢 **Node.js** — Runtime
+- 🚂 **Express** — HTTP API
+- 🔷 **TypeScript**
+- 🗄️ **Supabase** — Client
+- 💳 **Stripe**
+- 🤖 **Anthropic**, **OpenAI**, **Google GenAI**, **xAI** — Providers (via controllers)
+- 🔌 **Pipedream SDK**, **MCP SDK** — Integrations
+- 📦 **axios**, **cors**, **cookie-parser**, **dotenv**
 
-### Adding New AI Providers
+## 📜 Scripts
 
-1. Create provider-specific controller in `src/controllers/[provider]/`
-2. Add route handler in `src/routes/agentRoutes.ts`
-3. Implement streaming and response handling utilities
-
-## 🗄️ Database Integration
-
-The API uses Supabase for database operations. Configure your Supabase credentials in the `.env` file:
-
-```env
-SUPABASE_URL=your-supabase-project-url
-SUPABASE_KEY=your-supabase-anon-key
-```
-
-## 🧪 Testing
-
-```bash
-npm test
-```
-
-## 📝 TODO
-
-- [ ] Add comprehensive API documentation (Swagger/OpenAPI)
-- [ ] Add unit and integration tests
-- [ ] Add Docker configuration
-- [ ] Add CI/CD pipeline
-- [ ] Add rate limiting
-- [ ] Add request validation middleware
-- [ ] Add monitoring and logging infrastructure
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 🔗 Links
-
-- **[sloot.ai](https://sloot.ai)** - Visit the Sloot platform
-
-## 📄 License
-
-MIT License - see LICENSE file for details
+| Command | Purpose |
+|--------|---------|
+| `npm run dev` | ⚡ Nodemon + ts-node |
+| `npm run build` | 📦 `tsc` compile |
+| `npm start` | 🚀 Run `dist/index.js` |
+| `npm run dev:build` | 📦 Build then start |
+| `npm test` | 🧪 Jest |
+| `npm run lint` | 🔍 ESLint |
+| `npm run lint:fix` | ✨ ESLint fixes |
+| `npm run format` | 📝 Prettier write |
+| `npm run format:check` | ✔️ Prettier check |
+| `npm run check` | 🔍 Lint + format check |
+| `npm run clean` | 🧹 Remove `dist` |
